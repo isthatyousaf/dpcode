@@ -518,7 +518,8 @@ function mergeDynamicModelOptions(input: {
     (model) => !("isCustom" in model) || model.isCustom !== true,
   );
   const missingStaticBuiltIns =
-    input.provider === "opencode" && normalizedDynamicOptions.length > 0
+    (input.provider === "opencode" || input.provider === "pi") &&
+    normalizedDynamicOptions.length > 0
       ? []
       : staticBuiltInModels.filter((model) => !dynamicNormalizedSlugs.has(model.slug));
 
@@ -531,7 +532,7 @@ function mergeDynamicModelOptions(input: {
 }
 
 function skillMentionPrefix(provider: string): string {
-  return provider === "claudeAgent" ? "/" : "$";
+  return provider === "claudeAgent" ? "/" : provider === "pi" ? "/skill:" : "$";
 }
 
 function promptIncludesSkillMention(prompt: string, skillName: string, provider: string): boolean {
@@ -1262,6 +1263,7 @@ export default function ChatView({
       claudeAgent: resolveHint("claudeAgent"),
       gemini: resolveHint("gemini"),
       opencode: resolveHint("opencode"),
+      pi: resolveHint("pi"),
     };
   }, [
     activeProject?.defaultModelSelection,
@@ -1283,6 +1285,12 @@ export default function ChatView({
     providerModelsQueryOptions({
       provider: "opencode",
       binaryPath: settings.openCodeBinaryPath || null,
+    }),
+  );
+  const piDynamicModelsQuery = useQuery(
+    providerModelsQueryOptions({
+      provider: "pi",
+      binaryPath: settings.piBinaryPath || null,
     }),
   );
   const claudeDynamicAgentsQuery = useQuery(
@@ -1312,6 +1320,7 @@ export default function ChatView({
         customModelsByProvider.opencode,
         composerModelHintByProvider.opencode,
       ),
+      pi: getAppModelOptions("pi", customModelsByProvider.pi, composerModelHintByProvider.pi),
     };
     const result: Record<
       ProviderKind,
@@ -1323,24 +1332,33 @@ export default function ChatView({
       codex: codexDynamicModelsQuery.data,
       gemini: geminiModelsQuery.data,
       opencode: openCodeDynamicModelsQuery.data,
+      pi: piDynamicModelsQuery.data,
     };
 
-    for (const provider of ["claudeAgent", "codex", "gemini", "opencode"] as const) {
+    for (const provider of ["claudeAgent", "codex", "gemini", "opencode", "pi"] as const) {
       const dynamicModels = dynamicSources[provider]?.models;
       if (dynamicModels && dynamicModels.length > 0) {
         result[provider] = mergeDynamicModelOptions({
           provider,
           staticOptions: staticOptions[provider],
-          dynamicModels: dynamicModels.map((model) => ({
-            slug: model.slug,
-            ...(model.name !== undefined ? { name: model.name } : {}),
-            ...(model.upstreamProviderId !== undefined
-              ? { upstreamProviderId: model.upstreamProviderId }
-              : {}),
-            ...(model.upstreamProviderName !== undefined
-              ? { upstreamProviderName: model.upstreamProviderName }
-              : {}),
-          })),
+          dynamicModels: dynamicModels.map((model) => {
+            const option: {
+              slug: string;
+              name?: string | null;
+              upstreamProviderId?: string | null;
+              upstreamProviderName?: string | null;
+            } = { slug: model.slug };
+            if (model.name !== undefined) {
+              option.name = model.name;
+            }
+            if (model.upstreamProviderId !== undefined) {
+              option.upstreamProviderId = model.upstreamProviderId;
+            }
+            if (model.upstreamProviderName !== undefined) {
+              option.upstreamProviderName = model.upstreamProviderName;
+            }
+            return option;
+          }),
         });
       }
     }
@@ -1353,6 +1371,7 @@ export default function ChatView({
     customModelsByProvider,
     geminiModelsQuery.data,
     openCodeDynamicModelsQuery.data,
+    piDynamicModelsQuery.data,
   ]);
   const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
     threadId,
@@ -1368,12 +1387,14 @@ export default function ChatView({
       codex: codexDynamicModelsQuery.data?.models ?? [],
       gemini: geminiModelsQuery.data?.models ?? [],
       opencode: openCodeDynamicModelsQuery.data?.models ?? [],
+      pi: piDynamicModelsQuery.data?.models ?? [],
     }),
     [
       claudeDynamicModelsQuery.data?.models,
       codexDynamicModelsQuery.data?.models,
       geminiModelsQuery.data?.models,
       openCodeDynamicModelsQuery.data?.models,
+      piDynamicModelsQuery.data?.models,
     ],
   );
   const providerModelsQueryByProvider = {
@@ -1381,6 +1402,7 @@ export default function ChatView({
     codex: codexDynamicModelsQuery,
     gemini: geminiModelsQuery,
     opencode: openCodeDynamicModelsQuery,
+    pi: piDynamicModelsQuery,
   } as const;
   const selectedRuntimeModel = useMemo(
     () =>
@@ -2128,22 +2150,27 @@ export default function ChatView({
       interactionMode,
     });
   const dynamicAgents = useMemo(() => {
-    const query =
+    const agents =
       selectedProvider === "claudeAgent"
-        ? claudeDynamicAgentsQuery
+        ? claudeDynamicAgentsQuery.data?.agents
         : selectedProvider === "opencode"
-          ? openCodeDynamicAgentsQuery
-          : codexDynamicAgentsQuery;
-    return (query.data?.agents ?? []).map((a) => ({
-      name: a.name,
-      displayName: a.displayName,
-      ...(a.description ? { description: a.description } : {}),
-    }));
+          ? openCodeDynamicAgentsQuery.data?.agents
+          : codexDynamicAgentsQuery.data?.agents;
+    return (agents ?? []).map((agent) => {
+      const item: { name: string; displayName: string; description?: string } = {
+        name: agent.name,
+        displayName: agent.displayName,
+      };
+      if (agent.description) {
+        item.description = agent.description;
+      }
+      return item;
+    });
   }, [
     selectedProvider,
-    claudeDynamicAgentsQuery.data,
-    codexDynamicAgentsQuery.data,
-    openCodeDynamicAgentsQuery.data,
+    claudeDynamicAgentsQuery.data?.agents,
+    codexDynamicAgentsQuery.data?.agents,
+    openCodeDynamicAgentsQuery.data?.agents,
   ]);
   const normalComposerMenuItems = useComposerCommandMenuItems({
     composerTrigger: effectiveComposerTrigger,
@@ -3279,10 +3306,11 @@ export default function ChatView({
 
   const handleInteractionModeChange = useCallback(
     (mode: ProviderInteractionMode) => {
-      if (mode === interactionMode) return;
-      setComposerDraftInteractionMode(threadId, mode);
+      const nextMode = selectedProvider === "pi" && mode === "plan" ? "default" : mode;
+      if (nextMode === interactionMode) return;
+      setComposerDraftInteractionMode(threadId, nextMode);
       if (isLocalDraftThread) {
-        setDraftThreadContext(threadId, { interactionMode: mode });
+        setDraftThreadContext(threadId, { interactionMode: nextMode });
       }
       scheduleComposerFocus();
     },
@@ -3290,6 +3318,7 @@ export default function ChatView({
       interactionMode,
       isLocalDraftThread,
       scheduleComposerFocus,
+      selectedProvider,
       setComposerDraftInteractionMode,
       setDraftThreadContext,
       threadId,
@@ -4677,8 +4706,13 @@ export default function ChatView({
     const selectedModelSelectionForSend = queuedChatTurn?.modelSelection ?? selectedModelSelection;
     const providerOptionsForDispatchForSend =
       queuedChatTurn?.providerOptionsForDispatch ?? providerOptionsForDispatch;
-    const runtimeModeForSend = queuedChatTurn?.runtimeMode ?? runtimeMode;
-    const interactionModeForSend = queuedChatTurn?.interactionMode ?? interactionMode;
+    const isPiProviderForSend = selectedProviderForSend === "pi";
+    const runtimeModeForSend = isPiProviderForSend
+      ? "full-access"
+      : (queuedChatTurn?.runtimeMode ?? runtimeMode);
+    const interactionModeForSend = isPiProviderForSend
+      ? "default"
+      : (queuedChatTurn?.interactionMode ?? interactionMode);
     const envModeForSend = queuedChatTurn?.envMode ?? envMode;
     const {
       trimmedPrompt: trimmed,
@@ -5841,13 +5875,23 @@ export default function ChatView({
       };
       setComposerDraftModelSelection(activeThread.id, nextModelSelection);
       setStickyComposerModelSelection(nextModelSelection);
+      if (provider === "pi" && interactionMode !== "default") {
+        setComposerDraftInteractionMode(activeThread.id, "default");
+        if (isLocalDraftThread) {
+          setDraftThreadContext(activeThread.id, { interactionMode: "default" });
+        }
+      }
       scheduleComposerFocus();
     },
     [
       activeThread,
+      interactionMode,
+      isLocalDraftThread,
       lockedProvider,
       scheduleComposerFocus,
+      setComposerDraftInteractionMode,
       setComposerDraftModelSelection,
+      setDraftThreadContext,
       setStickyComposerModelSelection,
       customModelsByProvider,
     ],
@@ -7004,6 +7048,7 @@ export default function ChatView({
                     onAddPhotos={addComposerImages}
                     onToggleFastMode={toggleFastMode}
                     onSetPlanMode={setPlanMode}
+                    supportsPlanMode={selectedProvider !== "pi"}
                   />
 
                   {!isVoiceRecording && !isVoiceTranscribing ? (
@@ -7020,7 +7065,7 @@ export default function ChatView({
                         </>
                       ) : null}
 
-                      {interactionMode === "plan" ? (
+                      {selectedProvider !== "pi" && interactionMode === "plan" ? (
                         <>
                           <Separator
                             orientation="vertical"
@@ -7738,6 +7783,7 @@ export default function ChatView({
                                 onAddPhotos={addComposerImages}
                                 onToggleFastMode={toggleFastMode}
                                 onSetPlanMode={setPlanMode}
+                                supportsPlanMode={selectedProvider !== "pi"}
                               />
 
                               {!isVoiceRecording && !isVoiceTranscribing ? (
@@ -7755,7 +7801,7 @@ export default function ChatView({
                                     </>
                                   ) : null}
 
-                                  {interactionMode === "plan" ? (
+                                  {selectedProvider !== "pi" && interactionMode === "plan" ? (
                                     <>
                                       <Separator
                                         orientation="vertical"

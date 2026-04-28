@@ -136,7 +136,7 @@ describe("resolveAppModelSelection", () => {
     expect(
       resolveAppModelSelection(
         "codex",
-        { codex: ["galapagos-alpha"], claudeAgent: [], gemini: [], opencode: [] },
+        { codex: ["galapagos-alpha"], claudeAgent: [], gemini: [], opencode: [], pi: [] },
         "galapagos-alpha",
       ),
     ).toBe("galapagos-alpha");
@@ -146,7 +146,7 @@ describe("resolveAppModelSelection", () => {
     expect(
       resolveAppModelSelection(
         "codex",
-        { codex: [], claudeAgent: [], gemini: [], opencode: [] },
+        { codex: [], claudeAgent: [], gemini: [], opencode: [], pi: [] },
         "",
       ),
     ).toBe("gpt-5.5");
@@ -156,7 +156,7 @@ describe("resolveAppModelSelection", () => {
     expect(
       resolveAppModelSelection(
         "codex",
-        { codex: [], claudeAgent: [], gemini: [], opencode: [] },
+        { codex: [], claudeAgent: [], gemini: [], opencode: [], pi: [] },
         "GPT-5.3 Codex",
       ),
     ).toBe("gpt-5.3-codex");
@@ -166,7 +166,7 @@ describe("resolveAppModelSelection", () => {
     expect(
       resolveAppModelSelection(
         "claudeAgent",
-        { codex: [], claudeAgent: [], gemini: [], opencode: [] },
+        { codex: [], claudeAgent: [], gemini: [], opencode: [], pi: [] },
         "sonnet",
       ),
     ).toBe("claude-sonnet-4-6");
@@ -176,7 +176,7 @@ describe("resolveAppModelSelection", () => {
     expect(
       resolveAppModelSelection(
         "codex",
-        { codex: [], claudeAgent: [], gemini: [], opencode: [] },
+        { codex: [], claudeAgent: [], gemini: [], opencode: [], pi: [] },
         "custom/selected-model",
       ),
     ).toBe("custom/selected-model");
@@ -248,6 +248,7 @@ describe("getProviderStartOptions", () => {
         openCodeBinaryPath: "",
         openCodeServerPassword: "",
         openCodeServerUrl: "",
+        piBinaryPath: "",
       }),
     ).toEqual({
       claudeAgent: {
@@ -272,6 +273,7 @@ describe("getProviderStartOptions", () => {
         openCodeBinaryPath: "",
         openCodeServerPassword: "",
         openCodeServerUrl: "",
+        piBinaryPath: "",
       }),
     ).toBeUndefined();
   });
@@ -283,6 +285,7 @@ describe("provider-indexed custom model settings", () => {
     customClaudeModels: ["claude/custom-opus"],
     customGeminiModels: ["gemini/custom-flash"],
     customOpenCodeModels: ["openrouter/gpt-oss-120b"],
+    customPiModels: ["anthropic/claude-sonnet-pi"],
   } as const;
 
   it("exports one provider config per provider", () => {
@@ -291,6 +294,7 @@ describe("provider-indexed custom model settings", () => {
       "claudeAgent",
       "gemini",
       "opencode",
+      "pi",
     ]);
   });
 
@@ -299,6 +303,7 @@ describe("provider-indexed custom model settings", () => {
     expect(getCustomModelsForProvider(settings, "claudeAgent")).toEqual(["claude/custom-opus"]);
     expect(getCustomModelsForProvider(settings, "gemini")).toEqual(["gemini/custom-flash"]);
     expect(getCustomModelsForProvider(settings, "opencode")).toEqual(["openrouter/gpt-oss-120b"]);
+    expect(getCustomModelsForProvider(settings, "pi")).toEqual(["anthropic/claude-sonnet-pi"]);
   });
 
   it("reads default custom models for each provider", () => {
@@ -307,6 +312,7 @@ describe("provider-indexed custom model settings", () => {
       customClaudeModels: ["claude/default-opus"],
       customGeminiModels: ["gemini/default-flash"],
       customOpenCodeModels: ["openai/gpt-5"],
+      customPiModels: ["openai/gpt-5"],
     } as const;
 
     expect(getDefaultCustomModelsForProvider(defaults, "codex")).toEqual(["default/codex-model"]);
@@ -315,6 +321,7 @@ describe("provider-indexed custom model settings", () => {
     ]);
     expect(getDefaultCustomModelsForProvider(defaults, "gemini")).toEqual(["gemini/default-flash"]);
     expect(getDefaultCustomModelsForProvider(defaults, "opencode")).toEqual(["openai/gpt-5"]);
+    expect(getDefaultCustomModelsForProvider(defaults, "pi")).toEqual(["openai/gpt-5"]);
   });
 
   it("patches custom models for codex", () => {
@@ -341,12 +348,19 @@ describe("provider-indexed custom model settings", () => {
     });
   });
 
+  it("patches custom models for pi", () => {
+    expect(patchCustomModels("pi", ["openai/gpt-5"])).toEqual({
+      customPiModels: ["openai/gpt-5"],
+    });
+  });
+
   it("builds a complete provider-indexed custom model record", () => {
     expect(getCustomModelsByProvider(settings)).toEqual({
       codex: ["custom/codex-model"],
       claudeAgent: ["claude/custom-opus"],
       gemini: ["gemini/custom-flash"],
       opencode: ["openrouter/gpt-oss-120b"],
+      pi: ["anthropic/claude-sonnet-pi"],
     });
   });
 
@@ -365,6 +379,9 @@ describe("provider-indexed custom model settings", () => {
     expect(
       modelOptionsByProvider.opencode.some((option) => option.slug === "openrouter/gpt-oss-120b"),
     ).toBe(true);
+    expect(
+      modelOptionsByProvider.pi.some((option) => option.slug === "anthropic/claude-sonnet-pi"),
+    ).toBe(true);
   });
 
   it("normalizes and deduplicates custom model options per provider", () => {
@@ -377,6 +394,7 @@ describe("provider-indexed custom model settings", () => {
         "openrouter/gpt-oss-120b",
         "openrouter/gpt-oss-120b",
       ],
+      customPiModels: [" openai/gpt-5 ", "anthropic/claude-sonnet-pi"],
     });
 
     expect(
@@ -397,6 +415,9 @@ describe("provider-indexed custom model settings", () => {
     );
     expect(
       modelOptionsByProvider.opencode.filter((option) => option.slug === "openrouter/gpt-oss-120b"),
+    ).toHaveLength(1);
+    expect(
+      modelOptionsByProvider.pi.filter((option) => option.slug === "anthropic/claude-sonnet-pi"),
     ).toHaveLength(1);
   });
 });
@@ -429,6 +450,7 @@ describe("AppSettingsSchema", () => {
       customClaudeModels: [],
       customGeminiModels: [],
       customOpenCodeModels: [],
+      customPiModels: [],
     });
   });
 });

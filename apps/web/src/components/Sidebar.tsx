@@ -111,7 +111,7 @@ import { dispatchThreadRename } from "../lib/threadRename";
 import { quotePosixShellArgument } from "../lib/shellQuote";
 import { DEFAULT_THREAD_TERMINAL_ID, type SidebarThreadSummary, type Thread } from "../types";
 import { shouldRenderTerminalWorkspace } from "./ChatView.logic";
-import { ClaudeAI, Gemini, OpenAI, OpenCodeIcon } from "./Icons";
+import { ClaudeAI, Gemini, OpenAI, OpenCodeIcon, PiLogo } from "./Icons";
 import { AppNavigationButtons } from "./AppNavigationButtons";
 import { ProjectSidebarIcon } from "./ProjectSidebarIcon";
 import { ThreadPinToggleButton } from "./ThreadPinToggleButton";
@@ -266,7 +266,9 @@ const ADD_PROJECT_EXISTING_SYNC_ERROR =
   "This folder is already linked, but the existing project has not synced into the sidebar yet. Try again in a moment.";
 const DebugFeatureFlagsMenu = import.meta.env.DEV
   ? lazy(() =>
-      import("./DebugFeatureFlagsMenu").then((module) => ({ default: module.DebugFeatureFlagsMenu })),
+      import("./DebugFeatureFlagsMenu").then((module) => ({
+        default: module.DebugFeatureFlagsMenu,
+      })),
     )
   : null;
 
@@ -365,6 +367,9 @@ function ProviderGlyph({ provider, className }: { provider: ProviderKind; classN
     return (
       <OpenCodeIcon aria-hidden="true" className={cn("text-muted-foreground/70", className)} />
     );
+  }
+  if (provider === "pi") {
+    return <PiLogo aria-hidden="true" className={cn("text-muted-foreground/70", className)} />;
   }
   return <OpenAI aria-hidden="true" className={cn("text-muted-foreground/60", className)} />;
 }

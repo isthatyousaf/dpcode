@@ -26,7 +26,7 @@ import {
 } from "../appSettings";
 import { APP_VERSION } from "../branding";
 import { SidebarHeaderNavigationControls } from "../components/SidebarHeaderNavigationControls";
-import { ClaudeAI, Gemini, OpenAI, OpenCodeIcon } from "../components/Icons";
+import { ClaudeAI, Gemini, OpenAI, OpenCodeIcon, PiLogo } from "../components/Icons";
 import { Button } from "../components/ui/button";
 import { Collapsible, CollapsibleContent } from "../components/ui/collapsible";
 import { Input } from "../components/ui/input";
@@ -120,7 +120,8 @@ type InstallBinarySettingsKey =
   | "claudeBinaryPath"
   | "codexBinaryPath"
   | "geminiBinaryPath"
-  | "openCodeBinaryPath";
+  | "openCodeBinaryPath"
+  | "piBinaryPath";
 type InstallProviderSettings = {
   provider: ProviderKind;
   title: string;
@@ -192,6 +193,17 @@ const INSTALL_PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
     serverPasswordKey: "openCodeServerPassword",
     serverPasswordPlaceholder: "OpenCode server password",
     serverPasswordDescription: "Optional password for an externally managed OpenCode server.",
+  },
+  {
+    provider: "pi",
+    title: "Pi",
+    binaryPathKey: "piBinaryPath",
+    binaryPlaceholder: "Pi binary path",
+    binaryDescription: (
+      <>
+        Leave blank to use <code>pi</code> from your PATH.
+      </>
+    ),
   },
 ];
 
@@ -324,6 +336,7 @@ function SettingsRouteView() {
     opencode: Boolean(
       settings.openCodeBinaryPath || settings.openCodeServerUrl || settings.openCodeServerPassword,
     ),
+    pi: Boolean(settings.piBinaryPath),
   });
   const [selectedCustomModelProvider, setSelectedCustomModelProvider] =
     useState<ProviderKind>("codex");
@@ -334,6 +347,7 @@ function SettingsRouteView() {
     claudeAgent: "",
     gemini: "",
     opencode: "",
+    pi: "",
   });
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>
@@ -348,6 +362,7 @@ function SettingsRouteView() {
   const claudeBinaryPath = settings.claudeBinaryPath;
   const geminiBinaryPath = settings.geminiBinaryPath;
   const openCodeBinaryPath = settings.openCodeBinaryPath;
+  const piBinaryPath = settings.piBinaryPath;
   const openCodeServerUrl = settings.openCodeServerUrl;
   const openCodeServerPassword = settings.openCodeServerPassword;
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
@@ -404,7 +419,8 @@ function SettingsRouteView() {
     settings.customCodexModels.length +
     settings.customClaudeModels.length +
     settings.customGeminiModels.length +
-    settings.customOpenCodeModels.length;
+    settings.customOpenCodeModels.length +
+    settings.customPiModels.length;
   const savedCustomModelRows = MODEL_PROVIDER_SETTINGS.flatMap((providerSettings) =>
     getCustomModelsForProvider(settings, providerSettings.provider).map((slug) => ({
       key: `${providerSettings.provider}:${slug}`,
@@ -423,7 +439,8 @@ function SettingsRouteView() {
     settings.codexHomePath !== defaults.codexHomePath ||
     settings.openCodeBinaryPath !== defaults.openCodeBinaryPath ||
     settings.openCodeServerUrl !== defaults.openCodeServerUrl ||
-    settings.openCodeServerPassword !== defaults.openCodeServerPassword;
+    settings.openCodeServerPassword !== defaults.openCodeServerPassword ||
+    settings.piBinaryPath !== defaults.piBinaryPath;
 
   const changedSettingLabels = [
     ...(theme !== "system" ? ["Theme"] : []),
@@ -465,7 +482,8 @@ function SettingsRouteView() {
     ...(settings.customCodexModels.length > 0 ||
     settings.customClaudeModels.length > 0 ||
     settings.customGeminiModels.length > 0 ||
-    settings.customOpenCodeModels.length > 0
+    settings.customOpenCodeModels.length > 0 ||
+    settings.customPiModels.length > 0
       ? ["Custom models"]
       : []),
     ...(isInstallSettingsDirty ? ["Provider installs"] : []),
@@ -581,6 +599,7 @@ function SettingsRouteView() {
       claudeAgent: false,
       gemini: false,
       opencode: false,
+      pi: false,
     });
     setSelectedCustomModelProvider("codex");
     setCustomModelInputByProvider({
@@ -588,6 +607,7 @@ function SettingsRouteView() {
       claudeAgent: "",
       gemini: "",
       opencode: "",
+      pi: "",
     });
     setCustomModelErrorByProvider({});
     setShowAllCustomModels(false);
@@ -885,7 +905,8 @@ function SettingsRouteView() {
                     value !== "codex" &&
                     value !== "claudeAgent" &&
                     value !== "gemini" &&
-                    value !== "opencode"
+                    value !== "opencode" &&
+                    value !== "pi"
                   ) {
                     return;
                   }
@@ -901,6 +922,8 @@ function SettingsRouteView() {
                         <Gemini className="size-3.5 text-foreground" />
                       ) : settings.defaultProvider === "opencode" ? (
                         <OpenCodeIcon className="size-3.5 text-muted-foreground/70" />
+                      ) : settings.defaultProvider === "pi" ? (
+                        <PiLogo className="size-3.5 text-muted-foreground/70" />
                       ) : (
                         <OpenAI className="size-3.5" />
                       )}
@@ -931,6 +954,12 @@ function SettingsRouteView() {
                     <span className="flex items-center gap-2">
                       <OpenCodeIcon className="size-3.5 text-muted-foreground/70" />
                       OpenCode
+                    </span>
+                  </SelectItem>
+                  <SelectItem hideIndicator value="pi">
+                    <span className="flex items-center gap-2">
+                      <PiLogo className="size-3.5 text-muted-foreground/70" />
+                      Pi
                     </span>
                   </SelectItem>
                 </SelectPopup>
@@ -1783,6 +1812,7 @@ function SettingsRouteView() {
                       customClaudeModels: defaults.customClaudeModels,
                       customGeminiModels: defaults.customGeminiModels,
                       customOpenCodeModels: defaults.customOpenCodeModels,
+                      customPiModels: defaults.customPiModels,
                     });
                     setCustomModelErrorByProvider({});
                     setShowAllCustomModels(false);
@@ -1800,7 +1830,8 @@ function SettingsRouteView() {
                       value !== "codex" &&
                       value !== "claudeAgent" &&
                       value !== "gemini" &&
-                      value !== "opencode"
+                      value !== "opencode" &&
+                      value !== "pi"
                     ) {
                       return;
                     }
@@ -1929,12 +1960,14 @@ function SettingsRouteView() {
                       openCodeBinaryPath: defaults.openCodeBinaryPath,
                       openCodeServerUrl: defaults.openCodeServerUrl,
                       openCodeServerPassword: defaults.openCodeServerPassword,
+                      piBinaryPath: defaults.piBinaryPath,
                     });
                     setOpenInstallProviders({
                       codex: false,
                       claudeAgent: false,
                       gemini: false,
                       opencode: false,
+                      pi: false,
                     });
                   }}
                 />
@@ -1953,9 +1986,11 @@ function SettingsRouteView() {
                         ? settings.claudeBinaryPath !== defaults.claudeBinaryPath
                         : providerSettings.provider === "gemini"
                           ? settings.geminiBinaryPath !== defaults.geminiBinaryPath
-                          : settings.openCodeBinaryPath !== defaults.openCodeBinaryPath ||
-                            settings.openCodeServerUrl !== defaults.openCodeServerUrl ||
-                            settings.openCodeServerPassword !== defaults.openCodeServerPassword;
+                          : providerSettings.provider === "opencode"
+                            ? settings.openCodeBinaryPath !== defaults.openCodeBinaryPath ||
+                              settings.openCodeServerUrl !== defaults.openCodeServerUrl ||
+                              settings.openCodeServerPassword !== defaults.openCodeServerPassword
+                            : settings.piBinaryPath !== defaults.piBinaryPath;
                   const binaryPathValue =
                     providerSettings.binaryPathKey === "claudeBinaryPath"
                       ? claudeBinaryPath
@@ -1963,7 +1998,9 @@ function SettingsRouteView() {
                         ? geminiBinaryPath
                         : providerSettings.binaryPathKey === "openCodeBinaryPath"
                           ? openCodeBinaryPath
-                          : codexBinaryPath;
+                          : providerSettings.binaryPathKey === "piBinaryPath"
+                            ? piBinaryPath
+                            : codexBinaryPath;
 
                   return (
                     <Collapsible
@@ -2023,7 +2060,9 @@ function SettingsRouteView() {
                                           ? { geminiBinaryPath: event.target.value }
                                           : providerSettings.binaryPathKey === "openCodeBinaryPath"
                                             ? { openCodeBinaryPath: event.target.value }
-                                            : { codexBinaryPath: event.target.value },
+                                            : providerSettings.binaryPathKey === "piBinaryPath"
+                                              ? { piBinaryPath: event.target.value }
+                                              : { codexBinaryPath: event.target.value },
                                     )
                                   }
                                   placeholder={providerSettings.binaryPlaceholder}
