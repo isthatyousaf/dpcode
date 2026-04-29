@@ -192,7 +192,9 @@ interface PiSessionContext {
   readonly piSession: PiAgentSessionLike;
   readonly sessionScope: Scope.Scope;
   unsubscribe: (() => void) | null;
+  eventProcessing: Promise<void>;
   activeTurnId: TurnId | undefined;
+  activeTurnStarted: boolean;
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   activeToolCalls: Map<string, PiTrackedToolCall>;
   lastEmittedContextWindowKey: string | undefined;
@@ -931,6 +933,7 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
           return;
         }
         input.context.activeTurnId = undefined;
+        input.context.activeTurnStarted = false;
         input.context.activeToolCalls.clear();
         updateProviderSession(
           input.context,
@@ -966,6 +969,33 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
         }
       });
 
+      const completeActivePiTurn = Effect.fn("completeActivePiTurn")(function* (input: {
+        readonly context: PiSessionContext;
+        readonly turnId: TurnId;
+        readonly raw?: unknown;
+      }) {
+        if (input.context.stopped || input.context.activeTurnId !== input.turnId) {
+          return;
+        }
+        yield* emitPiContextWindowConfigured(input.context, input.raw);
+        yield* emitPiTokenUsage(input.context, input.raw);
+        input.context.activeTurnId = undefined;
+        input.context.activeTurnStarted = false;
+        input.context.activeToolCalls.clear();
+        updateProviderSession(input.context, { status: "ready" }, { clearActiveTurnId: true });
+        yield* emit({
+          ...buildEventBase({
+            threadId: input.context.session.threadId,
+            turnId: input.turnId,
+            ...(input.raw !== undefined ? { raw: input.raw } : {}),
+          }),
+          type: "turn.completed",
+          payload: {
+            state: "completed",
+          },
+        });
+      });
+
       const handlePiEvent = Effect.fn("handlePiEvent")(function* (
         context: PiSessionContext,
         event: AgentSessionEvent | unknown,
@@ -985,7 +1015,19 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
         });
 
         switch (typedEvent.type) {
+          case "agent_start":
+          case "turn_start":
+          case "message_start": {
+            if (turnId) {
+              context.activeTurnStarted = true;
+            }
+            break;
+          }
+
           case "message_update": {
+            if (turnId) {
+              context.activeTurnStarted = true;
+            }
             const assistantMessageEvent = typedEvent.assistantMessageEvent as
               | { type?: unknown; delta?: unknown; contentIndex?: unknown }
               | undefined;
@@ -1015,6 +1057,9 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
           }
 
           case "tool_execution_start": {
+            if (turnId) {
+              context.activeTurnStarted = true;
+            }
             const toolCallId = String(typedEvent.toolCallId ?? randomUUID());
             const toolName = String(typedEvent.toolName ?? "tool");
             const itemType = toToolLifecycleItemType(toolName);
@@ -1044,6 +1089,9 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
           }
 
           case "tool_execution_update": {
+            if (turnId) {
+              context.activeTurnStarted = true;
+            }
             const toolCallId = String(typedEvent.toolCallId ?? randomUUID());
             const tracked = context.activeToolCalls.get(toolCallId) ?? {
               id: toolCallId,
@@ -1071,6 +1119,9 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
           }
 
           case "tool_execution_end": {
+            if (turnId) {
+              context.activeTurnStarted = true;
+            }
             const toolCallId = String(typedEvent.toolCallId ?? randomUUID());
             const tracked = context.activeToolCalls.get(toolCallId) ?? {
               id: toolCallId,
@@ -1127,6 +1178,9 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
           }
 
           case "message_end": {
+            if (turnId) {
+              context.activeTurnStarted = true;
+            }
             yield* emitPiContextWindowConfigured(context, typedEvent);
             yield* emitPiTokenUsage(context, typedEvent);
             break;
@@ -1136,17 +1190,18 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
             if (!turnId) {
               break;
             }
-            yield* emitPiContextWindowConfigured(context, typedEvent);
-            yield* emitPiTokenUsage(context, typedEvent);
-            context.activeTurnId = undefined;
-            context.activeToolCalls.clear();
-            updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
-            yield* emit({
-              ...buildEventBase({ threadId: context.session.threadId, turnId, raw: typedEvent }),
-              type: "turn.completed",
-              payload: {
-                state: "completed",
-              },
+            if (!context.activeTurnStarted) {
+              yield* Effect.logWarning("ignored stale Pi agent_end before active turn started", {
+                threadId: context.session.threadId,
+                turnId,
+                eventType: typedEvent.type,
+              });
+              break;
+            }
+            yield* completeActivePiTurn({
+              context,
+              turnId,
+              raw: typedEvent,
             });
             break;
           }
@@ -1266,7 +1321,9 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
             piSession,
             sessionScope,
             unsubscribe: null,
+            eventProcessing: Promise.resolve(),
             activeTurnId: undefined,
+            activeTurnStarted: false,
             turns: [],
             activeToolCalls: new Map(),
             lastEmittedContextWindowKey: undefined,
@@ -1274,7 +1331,17 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
             stopped: false,
           };
           context.unsubscribe = piSession.subscribe((event) => {
-            Effect.runFork(handlePiEvent(context, event));
+            context.eventProcessing = context.eventProcessing
+              .catch(() => undefined)
+              .then(() => Effect.runPromise(handlePiEvent(context, event)))
+              .catch((cause) => {
+                Effect.runFork(
+                  Effect.logWarning("failed to handle Pi SDK event", {
+                    threadId: context.session.threadId,
+                    cause: errorMessage(cause),
+                  }),
+                );
+              });
           });
           sessions.set(input.threadId, context);
 
@@ -1404,6 +1471,7 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
 
         const turnId = TurnId.makeUnsafe(`pi-turn-${randomUUID()}`);
         context.activeTurnId = turnId;
+        context.activeTurnStarted = false;
         updateProviderSession(
           context,
           {
@@ -1446,6 +1514,27 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
           }),
         ).pipe(
           Effect.tap(() => Deferred.succeed(promptAccepted, undefined)),
+          Effect.tap(() =>
+            Effect.gen(function* () {
+              yield* Effect.promise(() => context.eventProcessing.catch(() => undefined));
+              if (context.activeTurnId !== turnId) {
+                return;
+              }
+              if (context.activeTurnStarted) {
+                yield* completeActivePiTurn({
+                  context,
+                  turnId,
+                  raw: { type: "pi.prompt.resolved_without_agent_end" },
+                });
+                return;
+              }
+              yield* failActivePiTurn({
+                context,
+                turnId,
+                detail: "Pi prompt finished without emitting any agent activity.",
+              });
+            }),
+          ),
           Effect.mapError(
             (cause) =>
               new ProviderAdapterRequestError({
@@ -1505,6 +1594,7 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
             ),
           );
           context.activeTurnId = undefined;
+          context.activeTurnStarted = false;
           updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
           if (activeTurnId) {
             yield* emit({

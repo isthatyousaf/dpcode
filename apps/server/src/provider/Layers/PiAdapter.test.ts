@@ -343,6 +343,7 @@ describe("PiAdapter", () => {
           (session) => session.threadId === asThreadId("thread-pi-long-running"),
         );
 
+        fake.emit({ type: "agent_start" });
         fake.emit({ type: "agent_end" });
         resolvePrompt?.();
         const collected = Array.from(yield* Fiber.join(eventsFiber));
@@ -363,6 +364,81 @@ describe("PiAdapter", () => {
       "thread.token-usage.updated",
       "turn.completed",
     ]);
+  });
+
+  it("does not let a stale Pi agent_end complete the next accepted turn", async () => {
+    const fake = createFakePiRuntime();
+    const resolvePrompts: Array<() => void> = [];
+    fake.session.prompt.mockImplementation(async (_text, options) => {
+      options?.preflightResult?.(true);
+      await new Promise<void>((resolve) => {
+        resolvePrompts.push(resolve);
+      });
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PiAdapter;
+        const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 9)).pipe(
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: "pi",
+          threadId: asThreadId("thread-pi-stale-end"),
+          runtimeMode: "full-access",
+          modelSelection: {
+            provider: "pi",
+            model: "openai/gpt-5",
+          },
+        });
+        const firstTurn = yield* adapter.sendTurn({
+          threadId: asThreadId("thread-pi-stale-end"),
+          input: "start long task",
+          attachments: [],
+          interactionMode: "default",
+        });
+        yield* adapter.interruptTurn(asThreadId("thread-pi-stale-end"), firstTurn.turnId);
+
+        const secondTurn = yield* adapter.sendTurn({
+          threadId: asThreadId("thread-pi-stale-end"),
+          input: "try again",
+          attachments: [],
+          interactionMode: "default",
+        });
+        fake.emit({ type: "agent_end" });
+        const runningAfterStaleEnd = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === asThreadId("thread-pi-stale-end"),
+        );
+
+        fake.emit({ type: "agent_start" });
+        fake.emit({
+          type: "message_update",
+          assistantMessageEvent: {
+            type: "text_delta",
+            delta: "Recovered response",
+          },
+        });
+        fake.emit({ type: "agent_end" });
+        for (const resolve of resolvePrompts) {
+          resolve();
+        }
+        const collected = Array.from(yield* Fiber.join(eventsFiber));
+        return { collected, runningAfterStaleEnd, secondTurn };
+      }).pipe(Effect.provide(providePiAdapter(fake.runtime))),
+    );
+
+    expect(result.runningAfterStaleEnd).toMatchObject({
+      status: "running",
+      activeTurnId: result.secondTurn.turnId,
+    });
+    expect(
+      result.collected.filter((event: ProviderRuntimeEvent) => event.type === "turn.completed"),
+    ).toHaveLength(1);
+    expect(result.collected.at(-1)).toMatchObject({
+      type: "turn.completed",
+      turnId: result.secondTurn.turnId,
+    });
   });
 
   it("emits configured Pi context window but skips unknown post-compaction usage", async () => {
