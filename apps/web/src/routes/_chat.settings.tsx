@@ -49,6 +49,7 @@ import { gitRemoveWorktreeMutationOptions } from "../lib/gitReactQuery";
 import {
   ArchiveIcon,
   ChevronDownIcon,
+  ExternalLinkIcon,
   PlusIcon,
   RotateCcwIcon,
   Undo2Icon,
@@ -137,6 +138,7 @@ type InstallProviderSettings = {
   serverPasswordKey?: "openCodeServerPassword";
   serverPasswordPlaceholder?: string;
   serverPasswordDescription?: ReactNode;
+  docsUrl?: string;
 };
 
 const INSTALL_PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
@@ -193,6 +195,7 @@ const INSTALL_PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
     serverPasswordKey: "openCodeServerPassword",
     serverPasswordPlaceholder: "OpenCode server password",
     serverPasswordDescription: "Optional password for an externally managed OpenCode server.",
+    docsUrl: "https://opencode.ai/docs",
   },
   {
     provider: "pi",
@@ -204,6 +207,7 @@ const INSTALL_PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
         Leave blank to use <code>pi</code> from your PATH.
       </>
     ),
+    docsUrl: "https://pi.dev/docs/latest",
   },
 ];
 
@@ -2155,6 +2159,22 @@ function SettingsRouteView() {
                                     </span>
                                   ) : null}
                                 </label>
+                              ) : null}
+
+                              {providerSettings.docsUrl ? (
+                                <p className="border-t border-border/60 pt-3 text-xs text-muted-foreground">
+                                  Provider setup and runtime details are available in the{" "}
+                                  <a
+                                    href={providerSettings.docsUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-1 font-medium text-foreground/80 underline-offset-4 hover:text-foreground hover:underline"
+                                  >
+                                    {providerSettings.title} docs
+                                    <ExternalLinkIcon className="size-3" aria-hidden="true" />
+                                  </a>
+                                  .
+                                </p>
                               ) : null}
                             </div>
                           </div>
