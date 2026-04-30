@@ -830,6 +830,7 @@ export default function ChatView({
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
   const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
+  const [activeTaskListCompact, setActiveTaskListCompact] = useState(false);
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   const [composerCommandPicker, setComposerCommandPicker] = useState<
     null | "fork-target" | "review-target"
@@ -6816,6 +6817,8 @@ export default function ChatView({
             <ActiveTaskListCard
               activeTaskList={activeTaskList}
               backgroundTaskCount={activeBackgroundTasks?.activeCount ?? 0}
+              compact={activeTaskListCompact}
+              onCompactChange={setActiveTaskListCompact}
               onOpenSidebar={() => setPlanSidebarOpen(true)}
             />
           </div>
@@ -7348,6 +7351,7 @@ export default function ChatView({
         <ChatHeader
           activeThreadId={activeThread.id}
           activeThreadTitle={activeThreadDisplayTitle}
+          activeThreadEntryPoint={terminalState.entryPoint}
           activeProvider={activeThread.modelSelection.provider}
           activeProjectName={activeProjectDisplayName}
           threadBreadcrumbs={threadBreadcrumbs}
@@ -7542,6 +7546,8 @@ export default function ChatView({
                         <ActiveTaskListCard
                           activeTaskList={activeTaskList}
                           backgroundTaskCount={activeBackgroundTasks?.activeCount ?? 0}
+                          compact={activeTaskListCompact}
+                          onCompactChange={setActiveTaskListCompact}
                           onOpenSidebar={() => setPlanSidebarOpen(true)}
                         />
                       </div>
