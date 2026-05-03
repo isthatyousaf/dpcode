@@ -997,6 +997,122 @@ describe("PiAdapter", () => {
     });
   });
 
+  it("keeps a Pi turn active while the SDK compacts after context overflow", async () => {
+    const fake = createFakePiRuntime();
+    let resolvePrompt: (() => void) | undefined;
+    fake.session.prompt.mockImplementation(async (_text, options) => {
+      options?.preflightResult?.(true);
+      await new Promise<void>((resolve) => {
+        resolvePrompt = resolve;
+      });
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PiAdapter;
+        const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 9)).pipe(
+          Effect.forkChild,
+        );
+        const threadId = asThreadId("thread-pi-context-overflow-compaction");
+
+        yield* adapter.startSession({
+          provider: "pi",
+          threadId,
+          runtimeMode: "full-access",
+          modelSelection: {
+            provider: "pi",
+            model: "openai/gpt-5",
+          },
+        });
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "continue after compaction",
+          attachments: [],
+          interactionMode: "default",
+        });
+
+        fake.emit({ type: "agent_start" });
+        fake.emit({
+          type: "agent_end",
+          messages: [
+            {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage:
+                'Codex error: {"type":"error","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}',
+            },
+          ],
+        });
+        const sessionAfterOverflowEnd = (yield* adapter.listSessions()).find(
+          (candidate) => candidate.threadId === threadId,
+        );
+
+        fake.emit({ type: "compaction_start", reason: "overflow" });
+        fake.emit({
+          type: "compaction_end",
+          reason: "overflow",
+          result: { summary: "Compacted summary" },
+        });
+        fake.emit({
+          type: "message_update",
+          assistantMessageEvent: {
+            type: "text_delta",
+            delta: "I compacted and continued.",
+          },
+        });
+        fake.emit({ type: "message_end" });
+        fake.emit({
+          type: "agent_end",
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "I compacted and continued." }],
+              stopReason: "stop",
+            },
+          ],
+        });
+        resolvePrompt?.();
+
+        const collected = Array.from(yield* Fiber.join(eventsFiber));
+        return { collected, sessionAfterOverflowEnd, turn };
+      }).pipe(Effect.provide(providePiAdapter(fake.runtime))),
+    );
+
+    expect(result.sessionAfterOverflowEnd).toMatchObject({
+      status: "running",
+      activeTurnId: result.turn.turnId,
+    });
+    expect(
+      result.collected.filter((event: ProviderRuntimeEvent) => event.type === "turn.aborted"),
+    ).toHaveLength(0);
+    expect(
+      result.collected.filter((event: ProviderRuntimeEvent) => event.type === "runtime.error"),
+    ).toHaveLength(0);
+    expect(result.collected).toContainEqual(
+      expect.objectContaining({
+        type: "item.updated",
+        turnId: result.turn.turnId,
+        payload: expect.objectContaining({
+          itemType: "context_compaction",
+        }),
+      }),
+    );
+    expect(result.collected).toContainEqual(
+      expect.objectContaining({
+        type: "thread.state.changed",
+        turnId: result.turn.turnId,
+        payload: expect.objectContaining({
+          state: "compacted",
+        }),
+      }),
+    );
+    expect(result.collected.at(-1)).toMatchObject({
+      type: "turn.completed",
+      turnId: result.turn.turnId,
+    });
+  });
+
   it("recovers final Pi assistant text when no text deltas were streamed", async () => {
     const fake = createFakePiRuntime();
     fake.session.prompt.mockImplementation(async () => {

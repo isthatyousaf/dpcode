@@ -776,7 +776,7 @@ function piFinalErrorFromEvent(event: Record<string, unknown>): string | undefin
 }
 
 function isRetryablePiError(message: string): boolean {
-  return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(
+  return /overloaded|provider.?returned.?error|context.?length.?exceeded|exceeds? the context window|input exceeds|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(
     message,
   );
 }
