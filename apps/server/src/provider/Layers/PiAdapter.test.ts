@@ -136,6 +136,9 @@ function createFakePiRuntime() {
     steer: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
     abort: vi.fn(async () => undefined),
+    abortCompaction: vi.fn(),
+    abortRetry: vi.fn(),
+    abortBash: vi.fn(),
     dispose: vi.fn(),
     setModel: vi.fn(async (model: unknown) => {
       if (model && typeof model === "object") {
@@ -1111,6 +1114,177 @@ describe("PiAdapter", () => {
       type: "turn.completed",
       turnId: result.turn.turnId,
     });
+  });
+
+  it("fails an active Pi turn when overflow compaction fails", async () => {
+    const fake = createFakePiRuntime();
+    let resolvePrompt: (() => void) | undefined;
+    fake.session.prompt.mockImplementation(async (_text, options) => {
+      options?.preflightResult?.(true);
+      await new Promise<void>((resolve) => {
+        resolvePrompt = resolve;
+      });
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PiAdapter;
+        const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 7)).pipe(
+          Effect.forkChild,
+        );
+        const threadId = asThreadId("thread-pi-compaction-fails");
+
+        yield* adapter.startSession({
+          provider: "pi",
+          threadId,
+          runtimeMode: "full-access",
+          modelSelection: {
+            provider: "pi",
+            model: "openai/gpt-5",
+          },
+        });
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "continue after compaction",
+          attachments: [],
+          interactionMode: "default",
+        });
+
+        fake.emit({ type: "agent_start" });
+        fake.emit({
+          type: "agent_end",
+          messages: [
+            {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "Your input exceeds the context window of this model.",
+            },
+          ],
+        });
+        fake.emit({ type: "compaction_start", reason: "overflow" });
+        fake.emit({
+          type: "compaction_end",
+          reason: "overflow",
+          result: undefined,
+          aborted: false,
+          willRetry: false,
+          errorMessage: "Context overflow recovery failed: quota exceeded",
+        });
+        resolvePrompt?.();
+
+        const collected = Array.from(yield* Fiber.join(eventsFiber));
+        const session = (yield* adapter.listSessions()).find(
+          (candidate) => candidate.threadId === threadId,
+        );
+        return { collected, session, turn };
+      }).pipe(Effect.provide(providePiAdapter(fake.runtime))),
+    );
+
+    expect(result.session).toMatchObject({
+      status: "ready",
+      lastError: "Context overflow recovery failed: quota exceeded",
+    });
+    expect(result.session).not.toHaveProperty("activeTurnId");
+    expect(result.collected.at(-2)).toMatchObject({
+      type: "turn.aborted",
+      turnId: result.turn.turnId,
+      payload: {
+        reason: "Context overflow recovery failed: quota exceeded",
+      },
+    });
+    expect(result.collected.at(-1)).toMatchObject({
+      type: "runtime.error",
+      turnId: result.turn.turnId,
+      payload: {
+        message: "Context overflow recovery failed: quota exceeded",
+      },
+    });
+  });
+
+  it("aborts Pi retry, compaction, bash, and agent work when interrupting a turn", async () => {
+    const fake = createFakePiRuntime();
+    let resolvePrompt: (() => void) | undefined;
+    fake.session.prompt.mockImplementation(async (_text, options) => {
+      options?.preflightResult?.(true);
+      await new Promise<void>((resolve) => {
+        resolvePrompt = resolve;
+      });
+    });
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PiAdapter;
+        const threadId = asThreadId("thread-pi-interrupt-aborts-recovery");
+
+        yield* adapter.startSession({
+          provider: "pi",
+          threadId,
+          runtimeMode: "full-access",
+          modelSelection: {
+            provider: "pi",
+            model: "openai/gpt-5",
+          },
+        });
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "start work",
+          attachments: [],
+          interactionMode: "default",
+        });
+        fake.emit({ type: "agent_start" });
+        yield* adapter.interruptTurn(threadId, turn.turnId);
+        resolvePrompt?.();
+      }).pipe(Effect.provide(providePiAdapter(fake.runtime))),
+    );
+
+    expect(fake.session.abortCompaction).toHaveBeenCalledTimes(1);
+    expect(fake.session.abortRetry).toHaveBeenCalledTimes(1);
+    expect(fake.session.abortBash).toHaveBeenCalledTimes(1);
+    expect(fake.session.abort).toHaveBeenCalled();
+  });
+
+  it("rejects manual Pi compaction while a turn is active", async () => {
+    const fake = createFakePiRuntime();
+    let resolvePrompt: (() => void) | undefined;
+    fake.session.prompt.mockImplementation(async (_text, options) => {
+      options?.preflightResult?.(true);
+      await new Promise<void>((resolve) => {
+        resolvePrompt = resolve;
+      });
+    });
+
+    const error = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const adapter = yield* PiAdapter;
+        const threadId = asThreadId("thread-pi-active-compact-rejected");
+
+        yield* adapter.startSession({
+          provider: "pi",
+          threadId,
+          runtimeMode: "full-access",
+          modelSelection: {
+            provider: "pi",
+            model: "openai/gpt-5",
+          },
+        });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "start work",
+          attachments: [],
+          interactionMode: "default",
+        });
+        fake.emit({ type: "agent_start" });
+        if (!adapter.compactThread) {
+          throw new Error("Expected Pi compactThread capability.");
+        }
+        yield* adapter.compactThread(threadId);
+      }).pipe(Effect.provide(providePiAdapter(fake.runtime))),
+    );
+    resolvePrompt?.();
+
+    expect(error._tag).toBe("Failure");
+    expect(fake.session.compact).not.toHaveBeenCalled();
   });
 
   it("recovers final Pi assistant text when no text deltas were streamed", async () => {

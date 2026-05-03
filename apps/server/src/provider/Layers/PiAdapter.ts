@@ -124,6 +124,7 @@ interface PiAgentSessionLike {
   };
   readonly isStreaming?: boolean;
   readonly isRetrying?: boolean;
+  readonly isCompacting?: boolean;
   readonly modelRegistry?: PiModelRegistryLike;
   readonly resourceLoader?: PiResourceLoaderLike;
   readonly promptTemplates?: ReadonlyArray<PiPromptTemplateLike>;
@@ -147,6 +148,9 @@ interface PiAgentSessionLike {
     images?: ReadonlyArray<{ type: "image"; data: string; mimeType: string }>,
   ) => Promise<void>;
   readonly abort: () => Promise<void>;
+  readonly abortCompaction?: () => void;
+  readonly abortRetry?: () => void;
+  readonly abortBash?: () => void;
   readonly dispose: () => void;
   readonly setModel: (model: unknown) => Promise<void>;
   readonly setThinkingLevel: (level: PiThinkingLevel) => void;
@@ -214,6 +218,7 @@ interface PiSessionContext {
   activeTurnGeneration: number;
   activeTurnStarted: boolean;
   activeAssistantTextEmitted: boolean;
+  activeTurnRecoveryPending: boolean;
   activeTurnMessageStartIndex: number;
   activeToolCalls: Map<string, PiTrackedToolCall>;
   lastEmittedContextWindowKey: string | undefined;
@@ -697,6 +702,7 @@ function clearActiveTurnTracking(context: PiSessionContext): void {
   context.activeTurnGeneration += 1;
   context.activeTurnStarted = false;
   context.activeAssistantTextEmitted = false;
+  context.activeTurnRecoveryPending = false;
   context.activeTurnMessageStartIndex = 0;
   context.activeToolCalls.clear();
 }
@@ -707,7 +713,11 @@ function piSessionMessages(piSession: PiAgentSessionLike): ReadonlyArray<unknown
 }
 
 function piSessionIsBusy(piSession: PiAgentSessionLike): boolean {
-  return piSession.isStreaming === true || piSession.isRetrying === true;
+  return (
+    piSession.isStreaming === true ||
+    piSession.isRetrying === true ||
+    piSession.isCompacting === true
+  );
 }
 
 function isPiTurnStartEvent(type: string): boolean {
@@ -1454,6 +1464,9 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
           }
 
           case "compaction_start": {
+            if (turnId && typedEvent.reason === "overflow") {
+              context.activeTurnRecoveryPending = true;
+            }
             yield* emit({
               ...buildEventBase({ threadId: context.session.threadId, turnId, raw: typedEvent }),
               type: "item.updated",
@@ -1469,14 +1482,42 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
 
           case "compaction_end": {
             context.lastEmittedTokenUsageKey = undefined;
-            yield* emit({
-              ...buildEventBase({ threadId: context.session.threadId, turnId, raw: typedEvent }),
-              type: "thread.state.changed",
-              payload: {
-                state: "compacted",
-                detail: typedEvent,
-              },
-            });
+            const errorDetail =
+              detailFromUnknown(typedEvent.errorMessage) ??
+              (typedEvent.aborted === true ? "Pi compaction was cancelled." : undefined);
+            if (errorDetail) {
+              if (turnId && context.activeTurnId === turnId) {
+                yield* failActivePiTurn({
+                  context,
+                  turnId,
+                  detail: errorDetail,
+                  cause: typedEvent,
+                });
+              } else {
+                yield* emit({
+                  ...buildEventBase({ threadId: context.session.threadId, turnId, raw: typedEvent }),
+                  type: "runtime.error",
+                  payload: {
+                    message: errorDetail,
+                    detail: typedEvent,
+                  },
+                });
+              }
+              break;
+            }
+            if (typedEvent.result !== undefined) {
+              yield* emit({
+                ...buildEventBase({ threadId: context.session.threadId, turnId, raw: typedEvent }),
+                type: "thread.state.changed",
+                payload: {
+                  state: "compacted",
+                  detail: typedEvent,
+                },
+              });
+            }
+            if (turnId && context.activeTurnId === turnId && typedEvent.willRetry !== true) {
+              context.activeTurnRecoveryPending = false;
+            }
             break;
           }
 
@@ -1558,8 +1599,9 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
               piFinalErrorFromEvent(typedEvent) ?? piFinalErrorFromTurnMessages(context);
             if (finalError) {
               if (isRetryablePiError(finalError)) {
+                context.activeTurnRecoveryPending = true;
                 yield* Effect.logWarning(
-                  "Pi agent_end contained retryable error; waiting for retry",
+                  "Pi agent_end contained recoverable error; waiting for SDK recovery",
                   {
                     threadId: context.session.threadId,
                     turnId,
@@ -1763,6 +1805,7 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
               activeTurnGeneration: 0,
               activeTurnStarted: false,
               activeAssistantTextEmitted: false,
+              activeTurnRecoveryPending: false,
               activeTurnMessageStartIndex: 0,
               activeToolCalls: new Map(),
               lastEmittedContextWindowKey: undefined,
@@ -1936,6 +1979,7 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
           context.activeTurnId = turnId;
           context.activeTurnStarted = false;
           context.activeAssistantTextEmitted = false;
+          context.activeTurnRecoveryPending = false;
           context.activeTurnMessageStartIndex = piSessionMessages(context.piSession).length;
           updateProviderSession(
             context,
@@ -2016,6 +2060,16 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
               Effect.gen(function* () {
                 yield* Effect.promise(() => context.eventProcessing.catch(() => undefined));
                 if (context.activeTurnId !== turnId) {
+                  return;
+                }
+                if (context.activeTurnRecoveryPending) {
+                  yield* Effect.logWarning(
+                    "Pi prompt promise resolved while SDK recovery is still pending",
+                    {
+                      threadId: context.session.threadId,
+                      turnId,
+                    },
+                  );
                   return;
                 }
                 if (piSessionIsBusy(context.piSession)) {
@@ -2203,7 +2257,12 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
             if (turnId && activeTurnId && turnId !== activeTurnId) {
               return;
             }
-            yield* Effect.promise(() => context.piSession.abort()).pipe(
+            yield* Effect.promise(async () => {
+              context.piSession.abortCompaction?.();
+              context.piSession.abortRetry?.();
+              context.piSession.abortBash?.();
+              await context.piSession.abort();
+            }).pipe(
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapterRequestError({
@@ -2325,6 +2384,13 @@ export function makePiAdapterLive(options?: PiAdapterLiveOptions) {
       const compactThread: NonNullable<PiAdapterShape["compactThread"]> = (threadId) =>
         Effect.gen(function* () {
           const context = ensureSessionContext(sessions, threadId);
+          if (context.activeTurnId || piSessionIsBusy(context.piSession)) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "compact",
+              detail: "Pi compaction cannot run while a turn is active.",
+            });
+          }
           if (!context.piSession.compact) {
             return;
           }
